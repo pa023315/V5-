@@ -3,21 +3,20 @@ import { GoogleGenAI } from "@google/genai";
 // We remove the global initialization to support dynamic API keys passed from the UI.
 
 export const generateTryOnImage = async (
-  apiKey: string | undefined, // New parameter
   userImageBase64: string,
   userImageMimeType: string,
   garmentImageBase64: string,
   garmentImageMimeType: string
 ): Promise<string> => {
-  // Use provided key, or fallback to env var if available (for backward compatibility or dev)
-  const finalKey = apiKey || process.env.API_KEY;
+  // Use env var exclusively as per guidelines
+  const apiKey = process.env.API_KEY;
 
-  if (!finalKey) {
-    throw new Error("找不到 API 金鑰。請點擊右上角「設定 API Key」按鈕輸入您的 Google Gemini API Key。");
+  if (!apiKey) {
+    throw new Error("API Key not found in environment variables. Please check your configuration.");
   }
 
   // Initialize client with the specific key for this request
-  const ai = new GoogleGenAI({ apiKey: finalKey });
+  const ai = new GoogleGenAI({ apiKey });
 
   try {
     const response = await ai.models.generateContent({

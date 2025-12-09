@@ -3,7 +3,6 @@ import Header from './components/Header';
 import UploadCard from './components/UploadCard';
 import ResultView from './components/ResultView';
 import HistoryList from './components/HistoryList';
-import ApiKeyModal from './components/ApiKeyModal';
 import { generateTryOnImage } from './services/geminiService';
 import { saveHistoryItem, getHistoryItems, deleteHistoryItemFromDb, trimHistory } from './services/historyDb';
 import { ImageFile, Step, HistoryItem } from './types';
@@ -21,11 +20,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   
-  // API Key State
-  const [apiKey, setApiKey] = useState<string>('');
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-  // Load history & API Key on mount
+  // Load history on mount
   useEffect(() => {
     const loadData = async () => {
       // Load History
@@ -34,19 +29,6 @@ const App: React.FC = () => {
         setHistory(items);
       } catch (e) {
         console.error("Failed to load history:", e);
-      }
-
-      // Load API Key
-      const storedKey = localStorage.getItem('gemini_api_key');
-      if (storedKey) {
-        setApiKey(storedKey);
-      } else {
-        // If no stored key AND no env key (dev mode), automatically open settings
-        // We check process.env.API_KEY to avoid nagging if it's already hardcoded in environment
-        if (!process.env.API_KEY) {
-           // Small delay to ensure smooth UI render before modal pops
-           setTimeout(() => setIsSettingsOpen(true), 500);
-        }
       }
     };
     loadData();
@@ -74,13 +56,6 @@ const App: React.FC = () => {
     setError(null);
     setStep(Step.RESULT);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleSaveKey = (key: string) => {
-    setApiKey(key);
-    localStorage.setItem('gemini_api_key', key);
-    setIsSettingsOpen(false);
-    setError(null); // Clear potential "Key missing" error
   };
 
   const processFile = (file: File): Promise<ImageFile> => {
@@ -195,13 +170,6 @@ const App: React.FC = () => {
   };
 
   const handleGenerate = async () => {
-    // Check for API Key first
-    if (!apiKey && !process.env.API_KEY) {
-      setIsSettingsOpen(true);
-      setError("請先設定您的 Google API Key 才能開始使用。");
-      return;
-    }
-
     if (!userImage || !garmentImage) return;
 
     setIsGenerating(true);
@@ -210,7 +178,6 @@ const App: React.FC = () => {
 
     try {
       const resultBase64 = await generateTryOnImage(
-        apiKey,
         userImage.base64,
         userImage.mimeType,
         garmentImage.base64,
@@ -238,9 +205,6 @@ const App: React.FC = () => {
       let msg = err.message || "生成影像失敗，請再試一次。";
       if (msg.includes("400")) msg = "請求無效，請確認圖片內容清晰。";
       if (msg.includes("SAFETY")) msg = "圖片內容被 AI 安全系統攔截，請更換圖片再試。";
-      if (msg.includes("API Key")) {
-         setIsSettingsOpen(true); // Re-open if key is invalid
-      }
       
       setError(msg);
       setStep(Step.UPLOAD);
@@ -259,14 +223,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
-
-      <ApiKeyModal 
-        isOpen={isSettingsOpen} 
-        onClose={() => setIsSettingsOpen(false)} 
-        onSave={handleSaveKey}
-        currentKey={apiKey}
-      />
+      <Header />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-12">
         

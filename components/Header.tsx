@@ -1,11 +1,11 @@
 import React from 'react';
-import { Shirt, Sparkles, Key } from 'lucide-react';
+import { Shirt, Sparkles } from 'lucide-react';
 
 interface HeaderProps {
-  onOpenSettings: () => void;
+  // onOpenSettings prop removed as it's no longer used
 }
 
-const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
+const Header: React.FC<HeaderProps> = () => {
   return (
     <header className="w-full bg-white border-b border-slate-200 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
@@ -21,15 +21,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
             <Sparkles size={14} className="text-amber-500" />
             <span>由 Gemini 2.5 Flash 技術支援</span>
           </div>
-
-          <button
-            onClick={onOpenSettings}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors border border-transparent hover:border-indigo-100"
-            title="設定 API Key"
-          >
-            <Key size={18} />
-            <span className="hidden sm:inline">設定 API Key</span>
-          </button>
         </div>
       </div>
     </header>
