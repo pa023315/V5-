@@ -1,11 +1,7 @@
 import React from 'react';
 import { Shirt, Sparkles } from 'lucide-react';
 
-interface HeaderProps {
-  // onOpenSettings prop removed as it's no longer used
-}
-
-const Header: React.FC<HeaderProps> = () => {
+const Header: React.FC = () => {
   return (
     <header className="w-full bg-white border-b border-slate-200 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">

@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
 // We remove the global initialization to support dynamic API keys passed from the UI.
 
@@ -8,15 +8,8 @@ export const generateTryOnImage = async (
   garmentImageBase64: string,
   garmentImageMimeType: string
 ): Promise<string> => {
-  // Use env var exclusively as per guidelines
-  const apiKey = process.env.API_KEY;
-
-  if (!apiKey) {
-    throw new Error("API Key not found in environment variables. Please check your configuration.");
-  }
-
-  // Initialize client with the specific key for this request
-  const genAI = new GoogleGenerativeAI(apiKey);
+  // Use process.env.API_KEY exclusively as per guidelines
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
     const response = await ai.models.generateContent({

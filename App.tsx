@@ -3,10 +3,11 @@ import Header from './components/Header';
 import UploadCard from './components/UploadCard';
 import ResultView from './components/ResultView';
 import HistoryList from './components/HistoryList';
+import ApiKeyModal from './components/ApiKeyModal';
 import { generateTryOnImage } from './services/geminiService';
 import { saveHistoryItem, getHistoryItems, deleteHistoryItemFromDb, trimHistory } from './services/historyDb';
 import { ImageFile, Step, HistoryItem } from './types';
-import { Wand2, AlertCircle, Loader2 } from 'lucide-react';
+import { Wand2, AlertCircle, Loader2, Key } from 'lucide-react';
 
 const MAX_HISTORY_ITEMS = 12;
 const FIXED_GARMENT_URL = "https://i.meee.com.tw/lcHCNPq.jpg";
@@ -20,6 +21,35 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   
+  // API Key Management
+  const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
+  const [hasKey, setHasKey] = useState<boolean>(false);
+
+  // Load API Key from local storage on mount
+  useEffect(() => {
+    const storedKey = localStorage.getItem('loom_ai_api_key');
+    if (storedKey) {
+      // Restore key to environment variable
+      process.env.API_KEY = storedKey;
+      setHasKey(true);
+    } else if (!process.env.API_KEY) {
+      // If no env key and no stored key, prompt user immediately
+      setHasKey(false);
+      const timer = setTimeout(() => setShowApiKeyModal(true), 500);
+      return () => clearTimeout(timer);
+    } else {
+      setHasKey(true);
+    }
+  }, []);
+
+  const handleSaveApiKey = (key: string) => {
+    localStorage.setItem('loom_ai_api_key', key);
+    process.env.API_KEY = key;
+    setHasKey(true);
+    setShowApiKeyModal(false);
+    setError(null);
+  };
+
   // Load history on mount
   useEffect(() => {
     const loadData = async () => {
@@ -157,8 +187,6 @@ const App: React.FC = () => {
   };
 
   const handleGarmentUpload = async (file: File) => {
-    // This functionality is currently disabled in UI via readOnly, 
-    // but kept here for potential future use or drag-drop edge cases if readOnly isn't fully enforced.
     try {
       const imageFile = await processFile(file);
       setGarmentImage(imageFile);
@@ -171,6 +199,11 @@ const App: React.FC = () => {
 
   const handleGenerate = async () => {
     if (!userImage || !garmentImage) return;
+
+    if (!process.env.API_KEY) {
+       setShowApiKeyModal(true);
+       return;
+    }
 
     setIsGenerating(true);
     setError(null);
@@ -205,6 +238,9 @@ const App: React.FC = () => {
       let msg = err.message || "生成影像失敗，請再試一次。";
       if (msg.includes("400")) msg = "請求無效，請確認圖片內容清晰。";
       if (msg.includes("SAFETY")) msg = "圖片內容被 AI 安全系統攔截，請更換圖片再試。";
+      if (msg.includes("API Key") || msg.includes("API_KEY")) {
+        setShowApiKeyModal(true);
+      }
       
       setError(msg);
       setStep(Step.UPLOAD);
@@ -240,14 +276,39 @@ const App: React.FC = () => {
         {(step === Step.UPLOAD || step === Step.PROCESSING) && (
           <div className="flex flex-col gap-12">
             
-            <div className="text-center max-w-2xl mx-auto space-y-4">
+            <div className="text-center max-w-2xl mx-auto space-y-6">
               <h1 className="text-4xl font-extrabold text-slate-900 tracking-tight">
                 虛擬試穿 (Virtual Try-On)
               </h1>
-              <p className="text-lg text-slate-600">
-                利用先進的生成式 AI 技術，立即預覽這件服裝穿在您身上的效果。
-                請上傳一張您的照片。
-              </p>
+              <div className="space-y-4">
+                <p className="text-lg text-slate-600">
+                  利用先進的生成式 AI 技術，立即預覽這件服裝穿在您身上的效果。
+                  請上傳一張您的照片。
+                </p>
+                
+                <div className="flex justify-center">
+                  <button
+                    onClick={() => setShowApiKeyModal(true)}
+                    className={`
+                      group flex items-center gap-3 px-5 py-2.5 rounded-full border shadow-sm transition-all
+                      ${hasKey 
+                        ? 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100' 
+                        : 'bg-white border-indigo-200 text-indigo-700 hover:bg-indigo-50 hover:border-indigo-300 animate-pulse-slow'
+                      }
+                    `}
+                  >
+                     <div className={`
+                       flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold
+                       ${hasKey ? 'bg-green-200 text-green-800' : 'bg-indigo-100 text-indigo-700'}
+                     `}>
+                        {hasKey ? <Key size={14} /> : '1'}
+                     </div>
+                     <span className="font-medium">
+                       {hasKey ? 'API Key 已設定 (點擊修改)' : '第一步：填寫 API Key'}
+                     </span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto w-full">
@@ -333,6 +394,13 @@ const App: React.FC = () => {
         )}
       </main>
 
+      <ApiKeyModal
+        isOpen={showApiKeyModal}
+        onClose={() => setShowApiKeyModal(false)}
+        onSave={handleSaveApiKey}
+        currentKey={process.env.API_KEY || ''}
+      />
+
       <style>{`
         @keyframes progress {
           0% { width: 0%; margin-left: 0; }
@@ -341,6 +409,9 @@ const App: React.FC = () => {
         }
         .animate-progress {
           animation: progress 2s infinite ease-in-out;
+        }
+        .animate-pulse-slow {
+          animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
         }
         .animate-fade-in {
             animation: fadeIn 0.5s ease-out forwards;
