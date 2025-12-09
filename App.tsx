@@ -210,12 +210,16 @@ const App: React.FC = () => {
     setStep(Step.PROCESSING);
 
     try {
+      // 🔥 關鍵修正：必須把 API_KEY 作為第一個參數傳進去！ 🔥
+      // 之前這裡漏了 API_KEY，導致參數錯位，User Image 被當成了 Key
       const resultBase64 = await generateTryOnImage(
+        process.env.API_KEY,   // <--- 加入這個
         userImage.base64,
         userImage.mimeType,
         garmentImage.base64,
         garmentImage.mimeType
       );
+      
       setGeneratedImage(resultBase64);
       setStep(Step.RESULT);
 
@@ -297,15 +301,15 @@ const App: React.FC = () => {
                       }
                     `}
                   >
-                     <div className={`
-                       flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold
-                       ${hasKey ? 'bg-green-200 text-green-800' : 'bg-indigo-100 text-indigo-700'}
-                     `}>
+                      <div className={`
+                        flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold
+                        ${hasKey ? 'bg-green-200 text-green-800' : 'bg-indigo-100 text-indigo-700'}
+                      `}>
                         {hasKey ? <Key size={14} /> : '1'}
-                     </div>
-                     <span className="font-medium">
-                       {hasKey ? 'API Key 已設定 (點擊修改)' : '第一步：填寫 API Key'}
-                     </span>
+                      </div>
+                      <span className="font-medium">
+                        {hasKey ? 'API Key 已設定 (點擊修改)' : '第一步：填寫 API Key'}
+                      </span>
                   </button>
                 </div>
               </div>
