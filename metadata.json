@@ -1,0 +1,5 @@
+{
+  "name": "Loom AI 虛擬試穿",
+  "description": "由 Gemini 2.5 Flash Image 驅動的逼真虛擬試穿應用程式。上傳使用者照片和服裝照片即可合成逼真的試穿效果。",
+  "requestFramePermissions": []
+}
