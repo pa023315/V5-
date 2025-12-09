@@ -1,7 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// 🔧 核心工具：將 Blob URL 強制轉為 Base64
-// 這是解決 Zeabur/Production 環境下圖片讀取失敗的關鍵
+// 🔧 工具：將 Blob URL 強制轉為 Base64 (解決 Zeabur 環境讀取問題)
 const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
   try {
     const response = await fetch(blobUrl);
@@ -18,16 +17,13 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
   }
 };
 
+// 🔧 核心壓縮邏輯
 const processAndCompressImage = async (input: string, mimeType: string): Promise<string> => {
-  // 1. 安全檢查：攔截錯誤參數 (這就是導致你看到 "data:image/png..." 錯誤的主因)
-  if (!input || (input.length < 200 && !input.startsWith("blob:") && !input.startsWith("http"))) {
-    console.error("❌ 嚴重錯誤：傳入的圖片數據無效，您可能傳錯了參數 (例如傳成了 'image/png')。內容:", input);
-    return "";
-  }
+  if (!input) return "";
 
   let srcToLoad = input;
 
-  // 2. 如果是 Blob 網址，先用 fetch 把它變成 Base64 (核彈級解法)
+  // 如果是 Blob 網址，先 fetch 下來 (核彈級解法)
   if (input.startsWith("blob:")) {
     const converted = await fetchBlobToBase64(input);
     if (!converted) return "";
@@ -39,7 +35,7 @@ const processAndCompressImage = async (input: string, mimeType: string): Promise
 
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = "Anonymous"; // 防止跨域汙染
+    img.crossOrigin = "Anonymous"; 
     img.src = srcToLoad;
 
     img.onload = () => {
@@ -47,7 +43,7 @@ const processAndCompressImage = async (input: string, mimeType: string): Promise
       const ctx = canvas.getContext('2d');
       if (!ctx) { resolve(""); return; }
 
-      // 3. 強制縮小：長邊限制 1024px
+      // 強制縮小：長邊限制 1024px
       const MAX_SIZE = 1024; 
       let width = img.width;
       let height = img.height;
@@ -61,16 +57,14 @@ const processAndCompressImage = async (input: string, mimeType: string): Promise
       canvas.width = width;
       canvas.height = height;
 
-      // 4. 轉為 JPEG (品質 0.7)
       ctx.drawImage(img, 0, 0, width, height);
+      // 轉為 JPEG (品質 0.7)
       const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
-      
-      // 回傳純 Base64
       resolve(compressedDataUrl.split(',')[1]);
     };
 
     img.onerror = (err) => {
-      console.error("圖片載入失敗 (Canvas):", err);
+      console.error("圖片載入失敗:", err);
       resolve("");
     };
   });
@@ -86,20 +80,37 @@ export const generateTryOnImage = async (
   
   if (!apiKey) throw new Error("API Key is missing");
 
+  // 🔥 自動修正參數順序 (Auto-Fix Swapped Arguments) 🔥
+  // 你的 Log 顯示 userImageBase64 收到了 "image/png"，這代表參數反了
+  // 這裡我們自動把它換回來，不用改外面的程式碼
+  let finalUserImg = userImageBase64;
+  let finalUserMime = userImageMimeType;
+  let finalGarmentImg = garmentImageBase64;
+  let finalGarmentMime = garmentImageMimeType;
+
+  // 偵測 User 圖片是否傳反
+  if ((finalUserImg === "image/png" || finalUserImg === "image/jpeg") && finalUserMime?.startsWith("blob:")) {
+    console.warn("⚠️ 偵測到參數傳反 (User Image)，正在自動修正...");
+    [finalUserImg, finalUserMime] = [finalUserMime, finalUserImg];
+  }
+
+  // 偵測 Garment 圖片是否傳反
+  if ((finalGarmentImg === "image/png" || finalGarmentImg === "image/jpeg") && finalGarmentMime?.startsWith("blob:")) {
+    console.warn("⚠️ 偵測到參數傳反 (Garment Image)，正在自動修正...");
+    [finalGarmentImg, finalGarmentMime] = [finalGarmentMime, finalGarmentImg];
+  }
+
   try {
     console.log("🚀 開始處理圖片...");
-    console.log("User Image 類型:", userImageBase64?.substring(0, 50));
-    console.log("Garment Image 類型:", garmentImageBase64?.substring(0, 50));
-
-    // 1. 平行處理圖片 (含 Fetch + 壓縮)
+    console.log("User Image (修正後):", finalUserImg?.substring(0, 50)); // 現在這裡應該要是 blob:
+    
     const [compressedUserImg, compressedGarmentImg] = await Promise.all([
-      processAndCompressImage(userImageBase64, userImageMimeType),
-      processAndCompressImage(garmentImageBase64, garmentImageMimeType)
+      processAndCompressImage(finalUserImg, finalUserMime),
+      processAndCompressImage(finalGarmentImg, finalGarmentMime)
     ]);
 
-    // 詳細的錯誤檢查
-    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (可能是參數傳錯或檔案損毀)");
-    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (可能是參數傳錯或檔案損毀)");
+    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (圖片無效)");
+    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (圖片無效)");
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -116,7 +127,6 @@ export const generateTryOnImage = async (
     
     Return ONLY the generated image.`;
 
-    // 2. 發送請求
     const result = await model.generateContent([
       prompt,
       { inlineData: { data: compressedUserImg, mimeType: "image/jpeg" } },
