@@ -9,7 +9,7 @@ export const generateTryOnImage = async (
   garmentImageMimeType: string
 ): Promise<string> => {
   // Use process.env.API_KEY exclusively as per guidelines
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const genAI = new GoogleGenerativeAI(apiKey);
 
   try {
     const response = await ai.models.generateContent({
