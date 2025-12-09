@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // We remove the global initialization to support dynamic API keys passed from the UI.
 
@@ -16,7 +16,7 @@ export const generateTryOnImage = async (
   }
 
   // Initialize client with the specific key for this request
-  const ai = new GoogleGenAI({ apiKey });
+  const genAI = new GoogleGenerativeAI(apiKey);
 
   try {
     const response = await ai.models.generateContent({
