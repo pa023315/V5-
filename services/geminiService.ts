@@ -21,7 +21,6 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
 const processAndCompressImage = async (input: string): Promise<string> => {
   if (!input) return "";
   
-  // 忽略顯然不是圖片的短字串
   if (!input.startsWith("blob:") && !input.startsWith("data:") && !input.startsWith("http") && input.length < 200) {
     return "";
   }
@@ -85,7 +84,6 @@ export const generateTryOnImage = async (
 
   const allArgs = [arg1, arg2, arg3, arg4];
   
-  // 尋找像是圖片的參數
   const validImages = allArgs.filter(arg => 
     arg && (arg.startsWith("blob:") || arg.length > 200)
   );
@@ -110,9 +108,12 @@ export const generateTryOnImage = async (
 
     const genAI = new GoogleGenerativeAI(apiKey);
     
-    // 🔥 關鍵修改：使用更穩定的模型版本號 🔥
-    // 如果 1.5-flash-001 還是 404，請改用 "gemini-1.5-pro"
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-001" });
+    // 🔥 最終修正：改用 gemini-1.5-pro 🔥
+    // 如果 Flash 出現 404，Pro 通常是帳號預設開啟的，最安全
+    const modelName = "gemini-1.5-pro"; 
+    
+    console.log(`正在呼叫模型: ${modelName}`);
+    const model = genAI.getGenerativeModel({ model: modelName });
 
     const prompt = `You are an AI stylist.
     INPUTS:
@@ -139,8 +140,9 @@ export const generateTryOnImage = async (
     console.error("API Error:", error);
     
     if (error instanceof Error) {
+        // 404 錯誤處理建議
         if (error.message.includes("404")) {
-             throw new Error("模型未找到 (404)。請檢查 API Key 是否有權限，或嘗試更換模型名稱。");
+             throw new Error("找不到模型 (404)。這可能是因為您的 API Key 尚未開通 1.5 版模型權限，或者該區域不支援。");
         }
         if (error.message.includes("Failed to fetch")) {
             throw new Error("連線失敗。請檢查 API Key 或網路狀況。");
