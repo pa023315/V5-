@@ -1,41 +1,35 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// 🔧 工具：確保 Base64 字串乾淨 (移除前綴)
-const cleanBase64 = (str: string) => {
-  if (!str) return "";
-  // 移除所有可能的 data URI 前綴
-  return str.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
-};
-
-// 🔧 核心修復：強健的圖片壓縮器
-const compressBase64 = (base64Str: string, mimeType: string): Promise<string> => {
+// 🔧 核心修復：萬能圖片處理器
+// 支援 Base64 字串，也支援 Blob URL (解決你的 "數據異常" 錯誤)
+const processAndCompressImage = (input: string, mimeType: string): Promise<string> => {
   return new Promise((resolve) => {
-    // 1. 安全檢查：如果字串是空的或看起來不像圖片數據，直接回傳空值以免報錯
-    if (!base64Str || base64Str.length < 100) {
-      console.warn("圖片數據異常 (太短或為空)，跳過壓縮");
-      resolve(base64Str); 
-      return;
-    }
-
+    // 1. 建立圖片物件
     const img = new Image();
     
-    // 2. 修復 "undefined" 錯誤：如果 mimeType 遺失，強制預設為 png
-    const safeMime = mimeType || "image/png";
-    
-    // 3. 智慧判斷：如果傳入的字串已經有前綴，就不重複加；否則補上正確的前綴
-    // 這是解決你看到 "data:undefined" 錯誤的關鍵
-    if (base64Str.startsWith("data:")) {
-      img.src = base64Str;
+    // 設定跨域屬性，避免 Canvas 汙染 (雖然 Blob 通常是本地的，但保險起見)
+    img.crossOrigin = "Anonymous";
+
+    // 2. 智慧判斷輸入類型
+    if (input.startsWith("blob:")) {
+      // 如果是 blob 網址 (你遇到的狀況)，直接載入
+      img.src = input;
+    } else if (input.startsWith("data:")) {
+      // 如果已經是完整的 Base64
+      img.src = input;
     } else {
-      img.src = `data:${safeMime};base64,${base64Str}`;
+      // 如果是純 Base64 內容，補上檔頭
+      const safeMime = mimeType || "image/png";
+      img.src = `data:${safeMime};base64,${input}`;
     }
 
-    // 成功載入圖片後進行壓縮
     img.onload = () => {
+      // 3. 準備 Canvas 進行壓縮
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        resolve(cleanBase64(base64Str));
+        console.error("Canvas 初始化失敗");
+        resolve(""); // 失敗回傳空值
         return;
       }
 
@@ -59,20 +53,18 @@ const compressBase64 = (base64Str: string, mimeType: string): Promise<string> =>
       canvas.width = width;
       canvas.height = height;
 
+      // 5. 繪製並轉為 JPEG (品質 0.7)
       ctx.drawImage(img, 0, 0, width, height);
-      
-      // 5. 輸出壓縮後的 Base64 (使用 JPEG 0.7 品質大幅瘦身)
-      // 注意：這會回傳完整的 data URI
       const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
       
-      // 回傳時去掉前綴，只留數據
+      // 6. 回傳乾淨的 Base64 (去掉 "data:image/jpeg;base64," 前綴)
       resolve(compressedDataUrl.split(',')[1]);
     };
 
-    // 失敗處理：如果圖片真的壞了，回傳原始字串嘗試運氣 (並印出詳細錯誤)
     img.onerror = (err) => {
-      console.error("圖片壓縮失敗 (可能是格式不支援)，將使用原圖傳送。", err);
-      resolve(cleanBase64(base64Str));
+      console.error("圖片載入失敗，無法壓縮:", err);
+      // 如果讀取失敗，回傳空字串，避免讓程式崩潰
+      resolve("");
     };
   });
 };
@@ -88,12 +80,18 @@ export const generateTryOnImage = async (
   if (!apiKey) throw new Error("API Key is missing");
 
   try {
-    // 1. 在傳送前，先壓縮兩張圖片 (這是解決 Failed to fetch 的唯一方法)
-    console.log("正在處理圖片...");
+    console.log("開始處理圖片 (支援 Blob 與 Base64)...");
+    
+    // 1. 平行處理兩張圖片 (壓縮 + 轉檔)
     const [compressedUserImg, compressedGarmentImg] = await Promise.all([
-      compressBase64(userImageBase64, userImageMimeType),
-      compressBase64(garmentImageBase64, garmentImageMimeType)
+      processAndCompressImage(userImageBase64, userImageMimeType),
+      processAndCompressImage(garmentImageBase64, garmentImageMimeType)
     ]);
+
+    // 檢查是否處理成功
+    if (!compressedUserImg || !compressedGarmentImg) {
+      throw new Error("圖片處理失敗：無法讀取圖片內容，請確認圖片是否有效。");
+    }
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
@@ -110,13 +108,13 @@ export const generateTryOnImage = async (
     
     Return ONLY the generated image.`;
 
-    // 2. 發送請求
+    // 2. 發送請求 (現在傳送的一定是乾淨的 Base64)
     const result = await model.generateContent([
       prompt,
       {
         inlineData: {
           data: compressedUserImg, 
-          mimeType: "image/jpeg",  // 壓縮後統一變成 jpeg，這很安全
+          mimeType: "image/jpeg", 
         },
       },
       {
@@ -134,7 +132,7 @@ export const generateTryOnImage = async (
     console.error("Gemini API Error Detail:", error);
     
     if (error instanceof Error && error.message.includes("Failed to fetch")) {
-      throw new Error("連線中斷。可能是圖片仍過大或 API 網路不穩。請再試一次。");
+      throw new Error("連線失敗。請檢查您的網路狀況，或 API Key 是否正確。");
     }
     throw error;
   }
