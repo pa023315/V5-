@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // We remove the global initialization to support dynamic API keys passed from the UI.
 
 export const generateTryOnImage = async (
+  apiKey: string,
   userImageBase64: string,
   userImageMimeType: string,
   garmentImageBase64: string,
