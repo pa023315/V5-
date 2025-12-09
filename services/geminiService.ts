@@ -9,7 +9,6 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
       const reader = new FileReader();
       reader.onloadend = () => {
         const result = reader.result as string;
-        // 確保回傳乾淨的 Base64 (去掉 data:image/xxx;base64, 前綴)
         resolve(result.split(',')[1]);
       };
       reader.onerror = reject;
@@ -38,13 +37,14 @@ const processImage = async (input: string): Promise<string> => {
   return "";
 };
 
-// 🕵️‍♀️ 取得並排序可用模型 (關鍵修正：優先使用 1.5 穩定版)
+// 🕵️‍♀️ 取得並排序可用模型 (關鍵修正：正確識別 latest 與排除 gemma)
 const getSortedModels = async (apiKey: string): Promise<string[]> => {
-  // 預設的安全清單 (如果 API 失敗就用這個)
+  // 預設的安全清單
   const defaultModels = [
     "gemini-1.5-flash",
+    "gemini-flash-latest", // 這是你帳號裡有的
     "gemini-1.5-pro",
-    "gemini-1.5-flash-001",
+    "gemini-pro-latest",
     "gemini-pro-vision"
   ];
 
@@ -57,31 +57,36 @@ const getSortedModels = async (apiKey: string): Promise<string[]> => {
     const data = await response.json();
     if (!data.models) return defaultModels;
 
-    // 1. 取得所有支援生成的模型名稱
     const allModels = data.models
       .filter((m: any) => m.supportedGenerationMethods.includes("generateContent"))
       .map((m: any) => m.name.replace("models/", ""));
 
     console.log("Google 回傳原始模型庫:", allModels);
 
-    // 2. 智慧排序：強迫 1.5 排在 2.0/2.5 前面 (避免實驗性模型崩潰)
-    // 我們建立一個優先順序權重
+    // 🛡️ 智慧權重排序 (Weighted Sorting) 🛡️
     const sorted = allModels.sort((a: string, b: string) => {
       const getScore = (name: string) => {
-        // 給穩定版最高分
-        if (name === "gemini-1.5-flash") return 100;
-        if (name === "gemini-1.5-pro") return 90;
-        if (name.includes("1.5-flash")) return 80;
-        if (name.includes("1.5-pro")) return 70;
-        if (name.includes("pro-vision")) return 60;
+        // 1. 最高優先：明確的 1.5 系列或 latest 系列 (最穩定)
+        if (name === "gemini-1.5-flash") return 1000;
+        if (name === "gemini-flash-latest") return 900; // 你的帳號有這個
+        if (name === "gemini-1.5-pro") return 800;
+        if (name === "gemini-pro-latest") return 700;
         
-        // 新模型給低分 (因為不穩定)
-        if (name.includes("2.5")) return 10;
-        if (name.includes("2.0")) return 10;
+        // 2. 次要優先：包含關鍵字的
+        if (name.includes("1.5-flash")) return 600;
+        if (name.includes("1.5-pro")) return 500;
         
-        return 20; // 其他未知模型
+        // 3. 保底舊版
+        if (name.includes("pro-vision")) return 100;
+
+        // 4. 降級區：Gemma (能力較弱/純文字)、Exp/Preview (額度問題)
+        if (name.includes("gemma")) return -100; // 絕對不要先選 Gemma
+        if (name.includes("exp")) return -50;    // 實驗版容易 429
+        if (name.includes("2.0") || name.includes("2.5")) return -20; // 新版不穩定
+
+        return 0;
       };
-      return getScore(b) - getScore(a); // 分數高的排前面
+      return getScore(b) - getScore(a);
     });
 
     return sorted.length > 0 ? sorted : defaultModels;
@@ -96,22 +101,22 @@ const getSortedModels = async (apiKey: string): Promise<string[]> => {
 const callGoogleApi = async (modelName: string, apiKey: string, userImage: string, garmentImage: string): Promise<string> => {
   const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
   
+  // ⚠️ 重要提示：Gemini generateContent API 只能回傳「文字描述」，無法生成「圖片檔案」。
+  // 如果你需要它回傳圖片，這是不支援的。但我們會嘗試讓它描述效果。
   const requestBody = {
     contents: [
       {
         parts: [
           {
-            text: `You are an AI stylist.
+            text: `You are an AI stylist assistant.
             INPUTS:
-            - Image 1: User
-            - Image 2: Garment
+            - Image 1: User photo
+            - Image 2: Garment photo
             
             TASK:
-            Generate a photorealistic image of the User wearing the Garment.
-            - Maintain the user's pose, body shape, and lighting.
-            - Adapt the garment to fit naturally.
-            
-            Return ONLY the generated image.`
+            Analyze how the garment would look on the user. 
+            Describe the fit, style match, and visual effect in detail.
+            (Note: You cannot generate a new image, so please provide a detailed text description of the try-on result).`
           },
           { inline_data: { mime_type: "image/jpeg", data: userImage } },
           { inline_data: { mime_type: "image/jpeg", data: garmentImage } }
@@ -130,25 +135,20 @@ const callGoogleApi = async (modelName: string, apiKey: string, userImage: strin
 
   if (!response.ok) {
     const errorMessage = data.error?.message || response.statusText;
-    // 拋出錯誤讓外層迴圈捕捉並換下一個模型
     throw new Error(`API_ERROR: [${response.status}] ${errorMessage}`);
   }
 
-  // 🛡️ 防爆解析 (Bulletproof Parsing) 🛡️
-  // 這裡就是修正 "Cannot read properties of undefined (reading '0')" 的關鍵
-  // 我們先檢查 data.candidates 是否存在且有長度
+  // 防爆解析
   if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
-    // 如果回傳空，丟出錯誤，讓程式自動切換下一個模型
-    throw new Error("EMPTY_RESPONSE: API 回傳了成功狀態，但沒有候選結果 (Candidates Empty)");
+    throw new Error("EMPTY_RESPONSE: API 回傳了成功狀態，但沒有候選結果");
   }
 
   const firstCandidate = data.candidates[0];
   if (!firstCandidate.content || !firstCandidate.content.parts || firstCandidate.content.parts.length === 0) {
-    // 有時候 Google 會因為安全理由回傳 finishReason: SAFETY，但沒有 content
     if (firstCandidate.finishReason) {
         throw new Error(`BLOCKED: 生成被攔截，原因: ${firstCandidate.finishReason}`);
     }
-    throw new Error("MALFORMED_RESPONSE: 回傳結構缺少 content.parts");
+    throw new Error("MALFORMED_RESPONSE: 回傳結構異常");
   }
 
   return firstCandidate.content.parts[0].text;
@@ -167,7 +167,6 @@ export const generateTryOnImage = async (
 
   console.log("🚀 開始處理...");
 
-  // 1. 處理圖片
   const allArgs = [arg1, arg2, arg3, arg4];
   const validImages = allArgs.filter(arg => 
     arg && (arg.startsWith("blob:") || arg.length > 200)
@@ -182,13 +181,12 @@ export const generateTryOnImage = async (
 
   if (!base64User || !base64Garment) throw new Error("圖片轉換 Base64 失敗");
 
-  // 2. 取得排序後的模型清單 (確保 1.5 在前)
   const modelsToTry = await getSortedModels(apiKey);
-  console.log("📋 決定嘗試的模型順序 (前5名):", modelsToTry.slice(0, 5)); 
+  // 只印出前 3 個最有希望的模型
+  console.log("📋 優先嘗試模型:", modelsToTry.slice(0, 3)); 
 
   let lastError = null;
 
-  // 3. 輪詢嘗試
   for (const model of modelsToTry) {
     try {
       console.log(`➡️ 正在嘗試模型: ${model}...`);
@@ -199,14 +197,11 @@ export const generateTryOnImage = async (
       console.warn(`⚠️ 模型 ${model} 失敗: ${error.message}`);
       lastError = error;
 
-      // 如果是 Key 錯誤，直接停，不用試別的了
       if (error.message.includes("API key not valid") || error.message.includes("key expired")) {
         throw new Error("API Key 無效，請檢查您的 Key。");
       }
-      
-      // 其他錯誤 (404, 429, 格式錯誤, candidates empty) -> 繼續迴圈，試下一個模型
     }
   }
 
-  throw new Error(`生成失敗，已嘗試 ${modelsToTry.length} 個模型。最後錯誤: ${lastError?.message}`);
+  throw new Error(`生成失敗。最後錯誤: ${lastError?.message}`);
 };
