@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// 🔧 工具：將 Blob URL 強制轉為 Base64 (解決 Zeabur 環境讀取問題)
+// 🔧 核心工具：將 Blob URL 強制轉為 Base64
 const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
   try {
     const response = await fetch(blobUrl);
@@ -19,11 +19,15 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
 
 // 🔧 核心壓縮邏輯
 const processAndCompressImage = async (input: string, mimeType: string): Promise<string> => {
-  if (!input) return "";
+  // 1. 強制攔截無效參數：如果傳入的是 "image/png" 這種短字串，直接擋掉
+  if (!input || (input.length < 100 && !input.startsWith("blob:") && !input.startsWith("http"))) {
+    console.warn(`⚠️ 忽略無效圖片數據: "${input}" (長度不足)`);
+    return "";
+  }
 
   let srcToLoad = input;
 
-  // 如果是 Blob 網址，先 fetch 下來 (核彈級解法)
+  // 2. 如果是 Blob 網址，先 fetch 下來
   if (input.startsWith("blob:")) {
     const converted = await fetchBlobToBase64(input);
     if (!converted) return "";
@@ -64,7 +68,7 @@ const processAndCompressImage = async (input: string, mimeType: string): Promise
     };
 
     img.onerror = (err) => {
-      console.error("圖片載入失敗:", err);
+      console.error("圖片載入失敗 (Canvas):", err);
       resolve("");
     };
   });
@@ -80,37 +84,39 @@ export const generateTryOnImage = async (
   
   if (!apiKey) throw new Error("API Key is missing");
 
-  // 🔥 自動修正參數順序 (Auto-Fix Swapped Arguments) 🔥
-  // 你的 Log 顯示 userImageBase64 收到了 "image/png"，這代表參數反了
-  // 這裡我們自動把它換回來，不用改外面的程式碼
+  // 🔥 超強自動修正：基於長度的交換邏輯 🔥
+  // 如果 "圖片變數" 很短 (<100)，但 "格式變數" 很長 (>100)，那肯定是傳反了，直接換回來。
+  
   let finalUserImg = userImageBase64;
   let finalUserMime = userImageMimeType;
-  let finalGarmentImg = garmentImageBase64;
-  let finalGarmentMime = garmentImageMimeType;
-
-  // 偵測 User 圖片是否傳反
-  if ((finalUserImg === "image/png" || finalUserImg === "image/jpeg") && finalUserMime?.startsWith("blob:")) {
-    console.warn("⚠️ 偵測到參數傳反 (User Image)，正在自動修正...");
+  
+  if (finalUserImg && finalUserImg.length < 100 && finalUserMime && finalUserMime.length > 100) {
+    console.warn("⚠️ 偵測到 User 參數傳反，已自動修正 (Length Swap)");
     [finalUserImg, finalUserMime] = [finalUserMime, finalUserImg];
   }
 
-  // 偵測 Garment 圖片是否傳反
-  if ((finalGarmentImg === "image/png" || finalGarmentImg === "image/jpeg") && finalGarmentMime?.startsWith("blob:")) {
-    console.warn("⚠️ 偵測到參數傳反 (Garment Image)，正在自動修正...");
+  let finalGarmentImg = garmentImageBase64;
+  let finalGarmentMime = garmentImageMimeType;
+
+  if (finalGarmentImg && finalGarmentImg.length < 100 && finalGarmentMime && finalGarmentMime.length > 100) {
+    console.warn("⚠️ 偵測到 Garment 參數傳反，已自動修正 (Length Swap)");
     [finalGarmentImg, finalGarmentMime] = [finalGarmentMime, finalGarmentImg];
   }
 
   try {
     console.log("🚀 開始處理圖片...");
-    console.log("User Image (修正後):", finalUserImg?.substring(0, 50)); // 現在這裡應該要是 blob:
-    
+    // 印出前 30 字元確認是否正確 (應該要是 blob: 或 data: 或 iVBO...)
+    console.log("User Img:", finalUserImg?.substring(0, 30)); 
+    console.log("Garment Img:", finalGarmentImg?.substring(0, 30));
+
     const [compressedUserImg, compressedGarmentImg] = await Promise.all([
       processAndCompressImage(finalUserImg, finalUserMime),
       processAndCompressImage(finalGarmentImg, finalGarmentMime)
     ]);
 
-    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (圖片無效)");
-    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (圖片無效)");
+    // 詳細檢查哪張圖失敗
+    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (圖片無效或讀取錯誤)");
+    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (圖片無效或讀取錯誤)");
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
