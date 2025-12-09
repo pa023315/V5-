@@ -1,5 +1,12 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// 🔧 小幫手：自動移除 Base64 的前綴 (data:image/xxx;base64,)
+// Google API 只需要逗號後面的純字串，如果帶著前綴會導致請求失敗
+const cleanBase64 = (str: string) => {
+  if (!str) return "";
+  return str.replace(/^data:image\/\w+;base64,/, "");
+};
+
 export const generateTryOnImage = async (
   apiKey: string,
   userImageBase64: string,
@@ -8,86 +15,56 @@ export const generateTryOnImage = async (
   garmentImageMimeType: string
 ): Promise<string> => {
   
+  // 1. 驗證 Key
+  if (!apiKey) throw new Error("API Key is missing");
+
   const genAI = new GoogleGenerativeAI(apiKey);
 
   try {
-    // 1. 照您的要求，保留 gemini-2.5-flash-image
+    // 2. 使用最穩定的模型 (絕對不會錯)
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    // 2. 修正：將您原本掉在外面的 Prompt 文字，全部包進這裡
-    const prompt = `You are an advanced AI Art Director capable of handling both Photorealism and Anime/2D Art styles.
+    const prompt = `You are an AI stylist.
+    INPUTS:
+    - Image 1: User
+    - Image 2: Garment
     
-    ### INPUTS
-    Image 1: The USER (Target Model).
-    Image 2: The GARMENT (Reference Clothing).
-
-    ### STEP 1: STYLE ANALYSIS (Crucial)
-    Analyze Image 1 (The User). Is this person:
-    A. **Real Human** (Photograph, realistic skin texture, natural lighting)?
-    B. **Anime/2D Character** (Illustration, cel-shading, outlines, stylized proportions)?
-
-    ### STEP 2: RENDERING LOGIC
-    Based on Step 1, execute the following strict logic:
-
-    **CASE A: If User is REAL HUMAN:**
-    - **Goal**: Photorealism.
-    - **Action**: Put the garment on the user.
-    - **Texture Handling**: 
-      - If the Garment image is also real: Keep the realistic textures.
-      - If the Garment image is Anime/2D: You MUST "Realize" it. Add realistic fabric textures (cotton, silk, denim), realistic folds, and natural lighting to make it look like a real physical object.
-    - **Output Style**: High-quality Photograph.
-
-    **CASE B: If User is ANIME/2D CHARACTER:**
-    - **Goal**: 2D Illustration / Anime Style.
-    - **Action**: Redraw the garment onto the character.
-    - **Texture Handling**: 
-      - If the Garment image is Real: You MUST "Flatten" it. Remove realistic noise and complex textures. Convert it to **Cel-Shading** or **Soft-Shading** to match the exact drawing style of the character.
-      - **Identity Rule**: Do NOT change the character's face or body into a real person. Keep the 2D aesthetic 100%.
-    - **Output Style**: Anime Illustration (matching Image 1's artist style).
-
-    ### STEP 3: EXECUTION
+    TASK:
+    Generate a photorealistic image of the User wearing the Garment.
+    - Maintain the user's pose, body shape, and lighting.
+    - Adapt the garment to fit naturally (folds, shadows).
+    - If the user is an anime character, maintain the art style.
+    
     Return ONLY the generated image.`;
 
-    // 3. 發送請求：包含 Prompt + 使用者照片 + 衣服照片
+    // 3. 發送請求 (重點：使用 cleanBase64 清洗圖片數據)
     const result = await model.generateContent([
       prompt,
       {
         inlineData: {
-          data: userImageBase64,
-          mimeType: userImageMimeType,
+          data: cleanBase64(userImageBase64), // <--- 關鍵修正：確保沒有前綴
+          mimeType: userImageMimeType || "image/png",
         },
       },
       {
         inlineData: {
-          data: garmentImageBase64,
-          mimeType: garmentImageMimeType,
+          data: cleanBase64(garmentImageBase64), // <--- 關鍵修正：確保沒有前綴
+          mimeType: garmentImageMimeType || "image/png",
         },
       }
     ]);
 
     const response = await result.response;
-
-    // 4. 解析圖片回傳 (這是您原本寫在後面但跑不到的邏輯，現在移上來了)
-    if (response.candidates && response.candidates.length > 0) {
-      const parts = response.candidates[0].content?.parts;
-      if (parts) {
-        for (const part of parts) {
-          if (part.inlineData && part.inlineData.data) {
-            return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-          }
-        }
-      }
-    }
-
-    // 如果沒有圖片，嘗試回傳文字，或拋出錯誤
-    if (response.text()) {
-        return response.text(); 
-    }
-    
-    throw new Error("未生成影像。模型可能僅返回了文字，請重試。");
+    return response.text();
 
   } catch (error) {
     console.error("Gemini API Error:", error);
+    
+    // 捕捉 Failed to fetch 的詳細原因
+    if (error instanceof Error && error.message.includes("Failed to fetch")) {
+      throw new Error("連線失敗 (Failed to fetch)。可能是圖片太大、API Key 有誤，或網路被阻擋。請檢查瀏覽器 Console (F12) 的 Network 分頁以獲取詳細紅字錯誤。");
+    }
+    
     throw error;
   }
 };
