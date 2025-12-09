@@ -18,28 +18,25 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
 };
 
 // 🔧 核心壓縮邏輯
-const processAndCompressImage = async (input: string, mimeType: string): Promise<string> => {
-  // 1. 寬鬆檢查：如果是 blob 開頭，或者是長字串，或者是 http 連結，都允許通過
-  // 這是為了解決 blob 網址很短 (約60字元) 被誤判的問題
-  const isBlob = input && input.startsWith("blob:");
-  const isLong = input && input.length > 100;
-  const isHttp = input && input.startsWith("http");
-
-  if (!input || (!isBlob && !isLong && !isHttp)) {
-    console.warn(`⚠️ 忽略無效圖片數據: "${input}" (非 blob 且長度不足)`);
+const processAndCompressImage = async (input: string): Promise<string> => {
+  // 1. 檢查輸入是否有效
+  if (!input) return "";
+  
+  // 忽略顯然不是圖片的短字串 (例如 "image/png")
+  if (!input.startsWith("blob:") && !input.startsWith("data:") && !input.startsWith("http") && input.length < 200) {
     return "";
   }
 
   let srcToLoad = input;
 
   // 2. 如果是 Blob 網址，先 fetch 下來
-  if (isBlob) {
+  if (input.startsWith("blob:")) {
     const converted = await fetchBlobToBase64(input);
     if (!converted) return "";
     srcToLoad = converted;
-  } else if (!input.startsWith("data:") && !isHttp) {
-    // 補全 Base64 前綴
-    srcToLoad = `data:${mimeType || "image/png"};base64,${input}`;
+  } else if (!input.startsWith("data:") && !input.startsWith("http")) {
+    // 假設是 Base64 但沒頭，補上 jpeg 頭 (比較保險)
+    srcToLoad = `data:image/jpeg;base64,${input}`;
   }
 
   return new Promise((resolve) => {
@@ -81,53 +78,50 @@ const processAndCompressImage = async (input: string, mimeType: string): Promise
 
 export const generateTryOnImage = async (
   apiKey: string,
-  userImageBase64: string,
-  userImageMimeType: string,
-  garmentImageBase64: string,
-  garmentImageMimeType: string
+  arg1: string,
+  arg2: string,
+  arg3: string,
+  arg4: string
 ): Promise<string> => {
   
   if (!apiKey) throw new Error("API Key is missing");
 
-  // 🔥 終極自動修正：支援 Blob 的交換邏輯 🔥
-  // 只要第二個參數是 blob 開頭，或者很長，就認定它是圖片，進行交換
-  
-  let finalUserImg = userImageBase64;
-  let finalUserMime = userImageMimeType;
-  
-  const userImgIsShort = finalUserImg && finalUserImg.length < 100 && !finalUserImg.startsWith("blob:");
-  const userMimeIsRealImg = finalUserMime && (finalUserMime.length > 100 || finalUserMime.startsWith("blob:"));
+  console.log("🚀 開始處理圖片 (智慧參數池模式)...");
 
-  if (userImgIsShort && userMimeIsRealImg) {
-    console.warn("⚠️ 偵測到 User 參數傳反，已自動修正 (Smart Swap)");
-    [finalUserImg, finalUserMime] = [finalUserMime, finalUserImg];
+  // 🔥 智慧參數池邏輯 🔥
+  // 不管外面參數傳的順序多亂，我們把所有參數收集起來，
+  // 然後只把「真正的圖片」過濾出來。
+  
+  const allArgs = [arg1, arg2, arg3, arg4];
+  
+  // 尋找像是圖片的參數 (Blob 網址，或是長度 > 200 的字串)
+  const validImages = allArgs.filter(arg => 
+    arg && (arg.startsWith("blob:") || arg.length > 200)
+  );
+
+  console.log(`偵測到 ${validImages.length} 張有效圖片`);
+
+  if (validImages.length < 2) {
+    console.error("❌ 嚴重錯誤：無法在參數中找到兩張圖片。偵測到的內容:", allArgs);
+    throw new Error("圖片參數遺失：程式無法從輸入中找到兩張有效的圖片，請確認您有上傳圖片。");
   }
 
-  let finalGarmentImg = garmentImageBase64;
-  let finalGarmentMime = garmentImageMimeType;
-
-  const garmentImgIsShort = finalGarmentImg && finalGarmentImg.length < 100 && !finalGarmentImg.startsWith("blob:");
-  const garmentMimeIsRealImg = finalGarmentMime && (finalGarmentMime.length > 100 || finalGarmentMime.startsWith("blob:"));
-
-  if (garmentImgIsShort && garmentMimeIsRealImg) {
-    console.warn("⚠️ 偵測到 Garment 參數傳反，已自動修正 (Smart Swap)");
-    [finalGarmentImg, finalGarmentMime] = [finalGarmentMime, finalGarmentImg];
-  }
+  // 按照慣例，抓到的第一張是 User，第二張是 Garment
+  // (這比依賴錯誤的參數位置可靠得多)
+  const finalUserImg = validImages[0];
+  const finalGarmentImg = validImages[1];
 
   try {
-    console.log("🚀 開始處理圖片...");
-    // 印出前 30 字元確認 (現在應該能正確看到 blob: 或 data: 或 iVBO...)
-    console.log("User Img:", finalUserImg?.substring(0, 30)); 
-    console.log("Garment Img:", finalGarmentImg?.substring(0, 30));
+    console.log("User Img (前30字):", finalUserImg?.substring(0, 30)); 
+    console.log("Garment Img (前30字):", finalGarmentImg?.substring(0, 30));
 
     const [compressedUserImg, compressedGarmentImg] = await Promise.all([
-      processAndCompressImage(finalUserImg, finalUserMime),
-      processAndCompressImage(finalGarmentImg, finalGarmentMime)
+      processAndCompressImage(finalUserImg),
+      processAndCompressImage(finalGarmentImg)
     ]);
 
-    // 詳細檢查哪張圖失敗
-    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (圖片無效或讀取錯誤)");
-    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (圖片無效或讀取錯誤)");
+    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (讀取錯誤)");
+    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (讀取錯誤)");
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
