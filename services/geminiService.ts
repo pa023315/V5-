@@ -9,6 +9,7 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
       const reader = new FileReader();
       reader.onloadend = () => {
         const result = reader.result as string;
+        // 確保回傳乾淨的 Base64 (去掉 data:image/xxx;base64, 前綴)
         resolve(result.split(',')[1]);
       };
       reader.onerror = reject;
@@ -67,12 +68,18 @@ const getSortedModels = async (apiKey: string): Promise<string[]> => {
     // 我們建立一個優先順序權重
     const sorted = allModels.sort((a: string, b: string) => {
       const getScore = (name: string) => {
-        if (name.includes("1.5-flash")) return 10;
-        if (name.includes("1.5-pro")) return 9;
-        if (name.includes("pro-vision")) return 8;
-        if (name.includes("2.0")) return 1; // 新模型不穩定，排後面
-        if (name.includes("2.5")) return 1; // 新模型不穩定，排後面
-        return 5;
+        // 給穩定版最高分
+        if (name === "gemini-1.5-flash") return 100;
+        if (name === "gemini-1.5-pro") return 90;
+        if (name.includes("1.5-flash")) return 80;
+        if (name.includes("1.5-pro")) return 70;
+        if (name.includes("pro-vision")) return 60;
+        
+        // 新模型給低分 (因為不穩定)
+        if (name.includes("2.5")) return 10;
+        if (name.includes("2.0")) return 10;
+        
+        return 20; // 其他未知模型
       };
       return getScore(b) - getScore(a); // 分數高的排前面
     });
@@ -129,7 +136,9 @@ const callGoogleApi = async (modelName: string, apiKey: string, userImage: strin
 
   // 🛡️ 防爆解析 (Bulletproof Parsing) 🛡️
   // 這裡就是修正 "Cannot read properties of undefined (reading '0')" 的關鍵
-  if (!data.candidates || data.candidates.length === 0) {
+  // 我們先檢查 data.candidates 是否存在且有長度
+  if (!data.candidates || !Array.isArray(data.candidates) || data.candidates.length === 0) {
+    // 如果回傳空，丟出錯誤，讓程式自動切換下一個模型
     throw new Error("EMPTY_RESPONSE: API 回傳了成功狀態，但沒有候選結果 (Candidates Empty)");
   }
 
@@ -175,7 +184,7 @@ export const generateTryOnImage = async (
 
   // 2. 取得排序後的模型清單 (確保 1.5 在前)
   const modelsToTry = await getSortedModels(apiKey);
-  console.log("📋 決定嘗試的模型順序:", modelsToTry.slice(0, 5)); // 印出前5個
+  console.log("📋 決定嘗試的模型順序 (前5名):", modelsToTry.slice(0, 5)); 
 
   let lastError = null;
 
@@ -195,7 +204,7 @@ export const generateTryOnImage = async (
         throw new Error("API Key 無效，請檢查您的 Key。");
       }
       
-      // 其他錯誤 (404, 429, 格式錯誤) -> 繼續迴圈，試下一個模型
+      // 其他錯誤 (404, 429, 格式錯誤, candidates empty) -> 繼續迴圈，試下一個模型
     }
   }
 
