@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// 移除所有外部 SDK 依賴，改用原生 Fetch 以確保相容性
 
 // 🔧 工具：將 Blob URL 強制轉為 Base64
 const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
@@ -7,7 +7,11 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
     const blob = await response.blob();
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        // 確保回傳乾淨的 Base64 (去掉 data:image/xxx;base64, 前綴)
+        resolve(result.split(',')[1]);
+      };
       reader.onerror = reject;
       reader.readAsDataURL(blob);
     });
@@ -17,62 +21,90 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
   }
 };
 
-// 🔧 圖片壓縮與處理
-const processAndCompressImage = async (input: string): Promise<string> => {
+// 🔧 核心壓縮與處理邏輯
+const processImage = async (input: string): Promise<string> => {
   if (!input) return "";
-  
-  // 忽略無效字串
-  if (!input.startsWith("blob:") && !input.startsWith("data:") && !input.startsWith("http") && input.length < 200) {
-    return "";
+
+  // 如果已經是乾淨的 Base64 (長度夠長且沒有 url 前綴)，直接回傳
+  if (!input.startsWith("blob:") && !input.startsWith("http") && !input.startsWith("data:") && input.length > 200) {
+    return input;
   }
 
-  let srcToLoad = input;
-
+  // 1. 處理 Blob URL
   if (input.startsWith("blob:")) {
-    const converted = await fetchBlobToBase64(input);
-    if (!converted) return "";
-    srcToLoad = converted;
-  } else if (!input.startsWith("data:") && !input.startsWith("http")) {
-    srcToLoad = `data:image/jpeg;base64,${input}`;
+    const base64 = await fetchBlobToBase64(input);
+    if (!base64) return "";
+    return base64; 
+  } 
+  
+  // 2. 處理 Data URL (data:image/...)
+  if (input.startsWith("data:")) {
+    return input.split(',')[1];
   }
 
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "Anonymous"; 
-    img.src = srcToLoad;
-
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { resolve(""); return; }
-
-      // 限制最大解析度 1024px
-      const MAX_SIZE = 1024; 
-      let width = img.width;
-      let height = img.height;
-
-      if (width > height) {
-        if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
-      } else {
-        if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-
-      ctx.drawImage(img, 0, 0, width, height);
-      // 轉為 JPEG (品質 0.7)
-      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
-      resolve(compressedDataUrl.split(',')[1]);
-    };
-
-    img.onerror = (err) => {
-      console.error("圖片載入失敗 (Canvas):", err);
-      resolve("");
-    };
-  });
+  return "";
 };
 
+// 🔧 呼叫 Google API 的核心函式 (原生 Fetch)
+const callGoogleApi = async (modelName: string, apiKey: string, userImage: string, garmentImage: string): Promise<string> => {
+  const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  
+  const requestBody = {
+    contents: [
+      {
+        parts: [
+          {
+            text: `You are an AI stylist.
+            INPUTS:
+            - Image 1: User
+            - Image 2: Garment
+            
+            TASK:
+            Generate a photorealistic image of the User wearing the Garment.
+            - Maintain the user's pose, body shape, and lighting.
+            - Adapt the garment to fit naturally.
+            
+            Return ONLY the generated image.`
+          },
+          {
+            inline_data: {
+              mime_type: "image/jpeg",
+              data: userImage
+            }
+          },
+          {
+            inline_data: {
+              mime_type: "image/jpeg",
+              data: garmentImage
+            }
+          }
+        ]
+      }
+    ]
+  };
+
+  const response = await fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody)
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    const errorMessage = data.error?.message || response.statusText;
+    throw new Error(`[${response.status}] ${errorMessage}`);
+  }
+
+  // 解析回應
+  if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+    return data.candidates[0].content.parts[0].text;
+  }
+
+  throw new Error("API 回傳了空的結果");
+};
+
+// === 主函式 ===
 export const generateTryOnImage = async (
   apiKey: string,
   arg1: string,
@@ -83,7 +115,9 @@ export const generateTryOnImage = async (
   
   if (!apiKey) throw new Error("API Key is missing");
 
-  // 1. 智慧參數池
+  console.log("🚀 開始處理圖片 (Native Fetch + Auto Failover)...");
+
+  // 1. 智慧參數池：抓出真正的圖片
   const allArgs = [arg1, arg2, arg3, arg4];
   const validImages = allArgs.filter(arg => 
     arg && (arg.startsWith("blob:") || arg.length > 200)
@@ -95,234 +129,46 @@ export const generateTryOnImage = async (
     throw new Error("圖片參數遺失：無法找到兩張圖片。");
   }
 
-  const [finalUserImg, finalGarmentImg] = validImages;
+  // 2. 取得乾淨的 Base64
+  const [base64User, base64Garment] = await Promise.all([
+    processImage(validImages[0]),
+    processImage(validImages[1])
+  ]);
 
-  // 2. 壓縮圖片
-  try {
-    const [compressedUserImg, compressedGarmentImg] = await Promise.all([
-      processAndCompressImage(finalUserImg),
-      processAndCompressImage(finalGarmentImg)
-    ]);
+  if (!base64User || !base64Garment) {
+    throw new Error("圖片轉換 Base64 失敗");
+  }
 
-    if (!compressedUserImg || !compressedGarmentImg) throw new Error("圖片處理失敗");
+  // 3. 自動故障轉移 (Failover) 機制
+  // 依序嘗試以下模型，直到成功為止
+  const MODELS = [
+    "gemini-1.5-flash",       // 首選 (快速)
+    "gemini-1.5-pro",         // 備選 (穩定)
+    "gemini-1.5-flash-001",   // 指定版本
+    "gemini-1.0-pro-vision"   // 舊版保底
+  ];
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    
-    // 🔥 終極清單：包含最新版與舊版模型 🔥
-    const MODELS_TO_TRY = [
-      "gemini-1.5-flash",       // 首選：最新快
-      "gemini-1.5-flash-001",   // 備選：Flash 指定版
-      "gemini-1.5-flash-latest",// 備選：Flash 最新版
-      "gemini-1.5-pro",         // 備選：Pro 旗艦
-      "gemini-1.5-pro-001",     // 備選：Pro 指定版
-      "gemini-1.5-pro-latest",  // 備選：Pro 最新版
-      "gemini-pro-vision",      // 保底：舊版 1.0 Vision (幾乎一定能用)
-    ];
+  let lastError = null;
 
-    let lastError = null;
+  for (const model of MODELS) {
+    try {
+      console.log(`正在嘗試模型: ${model}...`);
+      const result = await callGoogleApi(model, apiKey, base64User, base64Garment);
+      console.log(`✅ 模型 ${model} 呼叫成功！`);
+      return result;
+    } catch (error: any) {
+      console.warn(`⚠️ 模型 ${model} 失敗: ${error.message}`);
+      lastError = error;
 
-    for (const modelName of MODELS_TO_TRY) {
-      try {
-        console.log(`嘗試呼叫模型: ${modelName}...`);
-        const model = genAI.getGenerativeModel({ model: modelName });
-
-        const prompt = `You are an AI stylist.
-        INPUTS:
-        - Image 1: User
-        - Image 2: Garment
-        
-        TASK:
-        Generate a photorealistic image of the User wearing the Garment.
-        - Maintain the user's pose, body shape, and lighting.
-        - Adapt the garment to fit naturally.
-        
-        Return ONLY the generated image.`;
-
-        const result = await model.generateContent([
-          prompt,
-          { inlineData: { data: compressedUserImg, mimeType: "image/jpeg" } },
-          { inlineData: { data: compressedGarmentImg, mimeType: "image/jpeg" } }
-        ]);
-
-        const response = await result.response;
-        const text = response.text();
-        
-        console.log(`✅ 模型 ${modelName} 呼叫成功！`);
-        return text;
-
-      } catch (error: any) {
-        console.warn(`⚠️ 模型 ${modelName} 失敗:`, error.message);
-        lastError = error;
-        
-        // API Key 權限錯誤就直接停
-        if (error.message.includes("403") || error.message.includes("API key")) {
-          throw new Error("API Key 無效或沒有權限 (403)，請確認 Key 是否正確。");
-        }
+      // 如果是 API Key 錯誤 (400/403)，就不需要試別的模型了，直接報錯
+      if (error.message.includes("400") || error.message.includes("403") || error.message.includes("API key")) {
+        throw new Error("API Key 無效或權限不足，請檢查您的 Key。");
       }
+      // 如果是 404 (模型找不到) 或 503 (過載)，則繼續迴圈嘗試下一個
     }
-
-    console.error("❌ 所有模型嘗試皆失敗。");
-    // 如果連舊版都掛了，那只可能是 Key 的問題
-    if (lastError && lastError.message.includes("404")) {
-       throw new Error("無法連線到任何 Google 模型 (404)。請確認您的 API Key 是否有效，建議重新申請一組新的 API Key。");
-    }
-    
-    throw lastError || new Error("生成失敗，請稍後再試。");
-
-  } catch (error: any) {
-    console.error("Final API Error:", error);
-    throw error;
-  }
-};import { GoogleGenerativeAI } from "@google/generative-ai";
-
-// 🔧 核心工具：將 Blob URL 強制轉為 Base64
-const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
-  try {
-    const response = await fetch(blobUrl);
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (error) {
-    console.error("Blob 讀取失敗:", error);
-    return "";
-  }
-};
-
-// 🔧 核心壓縮邏輯
-const processAndCompressImage = async (input: string): Promise<string> => {
-  if (!input) return "";
-  
-  if (!input.startsWith("blob:") && !input.startsWith("data:") && !input.startsWith("http") && input.length < 200) {
-    return "";
   }
 
-  let srcToLoad = input;
-
-  if (input.startsWith("blob:")) {
-    const converted = await fetchBlobToBase64(input);
-    if (!converted) return "";
-    srcToLoad = converted;
-  } else if (!input.startsWith("data:") && !input.startsWith("http")) {
-    srcToLoad = `data:image/jpeg;base64,${input}`;
-  }
-
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "Anonymous"; 
-    img.src = srcToLoad;
-
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { resolve(""); return; }
-
-      const MAX_SIZE = 1024; 
-      let width = img.width;
-      let height = img.height;
-
-      if (width > height) {
-        if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
-      } else {
-        if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-
-      ctx.drawImage(img, 0, 0, width, height);
-      const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
-      resolve(compressedDataUrl.split(',')[1]);
-    };
-
-    img.onerror = (err) => {
-      console.error("圖片載入失敗 (Canvas):", err);
-      resolve("");
-    };
-  });
-};
-
-export const generateTryOnImage = async (
-  apiKey: string,
-  arg1: string,
-  arg2: string,
-  arg3: string,
-  arg4: string
-): Promise<string> => {
-  
-  if (!apiKey) throw new Error("API Key is missing");
-
-  console.log("🚀 開始處理圖片 (智慧參數池模式)...");
-
-  const allArgs = [arg1, arg2, arg3, arg4];
-  
-  const validImages = allArgs.filter(arg => 
-    arg && (arg.startsWith("blob:") || arg.length > 200)
-  );
-
-  console.log(`偵測到 ${validImages.length} 張有效圖片`);
-
-  if (validImages.length < 2) {
-    throw new Error("圖片參數遺失：程式無法從輸入中找到兩張有效的圖片。");
-  }
-
-  const finalUserImg = validImages[0];
-  const finalGarmentImg = validImages[1];
-
-  try {
-    const [compressedUserImg, compressedGarmentImg] = await Promise.all([
-      processAndCompressImage(finalUserImg),
-      processAndCompressImage(finalGarmentImg)
-    ]);
-
-    if (!compressedUserImg) throw new Error("使用者圖片處理失敗");
-    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗");
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    
-    // 🔥 最終修正：改用 gemini-1.5-pro 🔥
-    // 如果 Flash 出現 404，Pro 通常是帳號預設開啟的，最安全
-    const modelName = "gemini-1.5-pro"; 
-    
-    console.log(`正在呼叫模型: ${modelName}`);
-    const model = genAI.getGenerativeModel({ model: modelName });
-
-    const prompt = `You are an AI stylist.
-    INPUTS:
-    - Image 1: User
-    - Image 2: Garment
-    
-    TASK:
-    Generate a photorealistic image of the User wearing the Garment.
-    - Maintain the user's pose, body shape, and lighting.
-    - Adapt the garment to fit naturally.
-    
-    Return ONLY the generated image.`;
-
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { data: compressedUserImg, mimeType: "image/jpeg" } },
-      { inlineData: { data: compressedGarmentImg, mimeType: "image/jpeg" } }
-    ]);
-
-    const response = await result.response;
-    return response.text();
-
-  } catch (error) {
-    console.error("API Error:", error);
-    
-    if (error instanceof Error) {
-        // 404 錯誤處理建議
-        if (error.message.includes("404")) {
-             throw new Error("找不到模型 (404)。這可能是因為您的 API Key 尚未開通 1.5 版模型權限，或者該區域不支援。");
-        }
-        if (error.message.includes("Failed to fetch")) {
-            throw new Error("連線失敗。請檢查 API Key 或網路狀況。");
-        }
-    }
-    throw error;
-  }
+  // 4. 如果全部失敗
+  console.error("❌ 所有模型嘗試皆失敗。");
+  throw new Error(`生成失敗: ${lastError?.message || "無法連接到 Google API"}`);
 };
