@@ -1,4 +1,4 @@
-// 移除所有外部 SDK 依賴，改用原生 Fetch + 自動偵測模型列表
+// 移除所有 SDK，使用純 Fetch 以確保最大相容性
 
 // 🔧 工具：將 Blob URL 強制轉為 Base64
 const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
@@ -20,77 +20,72 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
   }
 };
 
-// 🔧 核心壓縮與處理邏輯
+// 🔧 圖片處理邏輯
 const processImage = async (input: string): Promise<string> => {
   if (!input) return "";
-
   if (!input.startsWith("blob:") && !input.startsWith("http") && !input.startsWith("data:") && input.length > 200) {
     return input;
   }
-
   if (input.startsWith("blob:")) {
     const base64 = await fetchBlobToBase64(input);
     if (!base64) return "";
     return base64; 
   } 
-  
   if (input.startsWith("data:")) {
     return input.split(',')[1];
   }
-
   return "";
 };
 
-// 🕵️‍♀️ 核心診斷：詢問 Google 目前 Key 真正能用的模型有哪些
-// 這步能徹底解決 404 問題，因為我們只呼叫存在的模型
-const discoverAvailableModel = async (apiKey: string): Promise<string> => {
+// 🕵️‍♀️ 取得並排序可用模型 (關鍵修正：優先使用 1.5 穩定版)
+const getSortedModels = async (apiKey: string): Promise<string[]> => {
+  // 預設的安全清單 (如果 API 失敗就用這個)
+  const defaultModels = [
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-001",
+    "gemini-pro-vision"
+  ];
+
   try {
     console.log("🔍 正在查詢可用模型列表...");
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     
-    if (!response.ok) {
-      console.warn("無法取得模型列表，將使用預設模型。狀態碼:", response.status);
-      return "gemini-1.5-flash"; // 預設值
-    }
+    if (!response.ok) return defaultModels;
 
     const data = await response.json();
-    if (!data.models) return "gemini-1.5-flash";
+    if (!data.models) return defaultModels;
 
-    // 篩選出支援 generateContent (生成內容) 的模型
-    const models = data.models
+    // 1. 取得所有支援生成的模型名稱
+    const allModels = data.models
       .filter((m: any) => m.supportedGenerationMethods.includes("generateContent"))
       .map((m: any) => m.name.replace("models/", ""));
 
-    console.log("✅ Google 回傳可用模型:", models);
+    console.log("Google 回傳原始模型庫:", allModels);
 
-    // 優先順序策略：Flash > Pro > Vision
-    // 我們從清單中挑選一個最佳的
-    const preferredOrder = [
-      "gemini-1.5-flash",
-      "gemini-1.5-flash-001",
-      "gemini-1.5-pro",
-      "gemini-1.5-pro-001",
-      "gemini-pro-vision" // 舊版保底
-    ];
+    // 2. 智慧排序：強迫 1.5 排在 2.0/2.5 前面 (避免實驗性模型崩潰)
+    // 我們建立一個優先順序權重
+    const sorted = allModels.sort((a: string, b: string) => {
+      const getScore = (name: string) => {
+        if (name.includes("1.5-flash")) return 10;
+        if (name.includes("1.5-pro")) return 9;
+        if (name.includes("pro-vision")) return 8;
+        if (name.includes("2.0")) return 1; // 新模型不穩定，排後面
+        if (name.includes("2.5")) return 1; // 新模型不穩定，排後面
+        return 5;
+      };
+      return getScore(b) - getScore(a); // 分數高的排前面
+    });
 
-    for (const pref of preferredOrder) {
-      if (models.includes(pref)) {
-        console.log(`🎯 選定模型: ${pref}`);
-        return pref;
-      }
-    }
-
-    // 如果都沒有，就拿清單裡隨便一個有 'gemini' 字眼的
-    const fallback = models.find((m: string) => m.includes("gemini"));
-    return fallback || "gemini-1.5-flash";
+    return sorted.length > 0 ? sorted : defaultModels;
 
   } catch (e) {
-    console.error("模型偵測失敗:", e);
-    return "gemini-1.5-flash";
+    console.warn("模型列表獲取失敗，使用預設值");
+    return defaultModels;
   }
 };
 
-// 🔧 呼叫 API
+// 🔧 呼叫 API (包含防爆解析)
 const callGoogleApi = async (modelName: string, apiKey: string, userImage: string, garmentImage: string): Promise<string> => {
   const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
   
@@ -128,24 +123,26 @@ const callGoogleApi = async (modelName: string, apiKey: string, userImage: strin
 
   if (!response.ok) {
     const errorMessage = data.error?.message || response.statusText;
-    
-    // 如果這時候還 404，那真的就是帳號問題了
-    if (response.status === 404) {
-        throw new Error(`模型 ${modelName} 無法存取 (404)。請確認您的 API Key 專案已啟用 Generative Language API。`);
-    }
-    // API Key 額度問題
-    if (JSON.stringify(data).includes("limit: 0")) {
-        throw new Error(`[CRITICAL] API Key 額度歸零或已失效。請更換 API Key。`);
-    }
-
-    throw new Error(`[${response.status}] ${errorMessage}`);
+    // 拋出錯誤讓外層迴圈捕捉並換下一個模型
+    throw new Error(`API_ERROR: [${response.status}] ${errorMessage}`);
   }
 
-  if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
-    return data.candidates[0].content.parts[0].text;
+  // 🛡️ 防爆解析 (Bulletproof Parsing) 🛡️
+  // 這裡就是修正 "Cannot read properties of undefined (reading '0')" 的關鍵
+  if (!data.candidates || data.candidates.length === 0) {
+    throw new Error("EMPTY_RESPONSE: API 回傳了成功狀態，但沒有候選結果 (Candidates Empty)");
   }
 
-  throw new Error("API 回傳了空的結果");
+  const firstCandidate = data.candidates[0];
+  if (!firstCandidate.content || !firstCandidate.content.parts || firstCandidate.content.parts.length === 0) {
+    // 有時候 Google 會因為安全理由回傳 finishReason: SAFETY，但沒有 content
+    if (firstCandidate.finishReason) {
+        throw new Error(`BLOCKED: 生成被攔截，原因: ${firstCandidate.finishReason}`);
+    }
+    throw new Error("MALFORMED_RESPONSE: 回傳結構缺少 content.parts");
+  }
+
+  return firstCandidate.content.parts[0].text;
 };
 
 // === 主函式 ===
@@ -159,44 +156,48 @@ export const generateTryOnImage = async (
   
   if (!apiKey) throw new Error("API Key is missing");
 
-  console.log("🚀 開始處理圖片 (Auto-Discovery Mode)...");
+  console.log("🚀 開始處理...");
 
-  // 1. 智慧參數池
+  // 1. 處理圖片
   const allArgs = [arg1, arg2, arg3, arg4];
   const validImages = allArgs.filter(arg => 
     arg && (arg.startsWith("blob:") || arg.length > 200)
   );
 
-  console.log(`偵測到 ${validImages.length} 張有效圖片`);
+  if (validImages.length < 2) throw new Error("圖片參數遺失：無法找到兩張圖片。");
 
-  if (validImages.length < 2) {
-    throw new Error("圖片參數遺失：無法找到兩張圖片。");
-  }
-
-  // 2. 轉換圖片
   const [base64User, base64Garment] = await Promise.all([
     processImage(validImages[0]),
     processImage(validImages[1])
   ]);
 
-  if (!base64User || !base64Garment) {
-    throw new Error("圖片轉換 Base64 失敗");
-  }
+  if (!base64User || !base64Garment) throw new Error("圖片轉換 Base64 失敗");
 
-  // 3. 自動偵測最佳模型
-  // 先去問 Google 到底有哪些模型可以用，避免盲猜導致 404
-  const targetModel = await discoverAvailableModel(apiKey);
+  // 2. 取得排序後的模型清單 (確保 1.5 在前)
+  const modelsToTry = await getSortedModels(apiKey);
+  console.log("📋 決定嘗試的模型順序:", modelsToTry.slice(0, 5)); // 印出前5個
 
-  // 4. 執行呼叫
-  try {
-    console.log(`🚀 最終決定使用模型: ${targetModel}`);
-    return await callGoogleApi(targetModel, apiKey, base64User, base64Garment);
-  } catch (error: any) {
-    // 如果自動偵測的模型還是失敗，最後嘗試一次舊版保底
-    if (error.message.includes("404") && targetModel !== "gemini-pro-vision") {
-        console.warn("自動選擇的模型失敗，嘗試使用舊版 Vision 模型保底...");
-        return await callGoogleApi("gemini-pro-vision", apiKey, base64User, base64Garment);
+  let lastError = null;
+
+  // 3. 輪詢嘗試
+  for (const model of modelsToTry) {
+    try {
+      console.log(`➡️ 正在嘗試模型: ${model}...`);
+      const result = await callGoogleApi(model, apiKey, base64User, base64Garment);
+      console.log(`✅ 模型 ${model} 成功生成！`);
+      return result;
+    } catch (error: any) {
+      console.warn(`⚠️ 模型 ${model} 失敗: ${error.message}`);
+      lastError = error;
+
+      // 如果是 Key 錯誤，直接停，不用試別的了
+      if (error.message.includes("API key not valid") || error.message.includes("key expired")) {
+        throw new Error("API Key 無效，請檢查您的 Key。");
+      }
+      
+      // 其他錯誤 (404, 429, 格式錯誤) -> 繼續迴圈，試下一個模型
     }
-    throw error;
   }
+
+  throw new Error(`生成失敗，已嘗試 ${modelsToTry.length} 個模型。最後錯誤: ${lastError?.message}`);
 };
