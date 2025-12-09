@@ -1,31 +1,45 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// 🔧 小幫手：自動移除 Base64 的前綴 (data:image/xxx;base64,)
+// 🔧 工具：確保 Base64 字串乾淨 (移除前綴)
 const cleanBase64 = (str: string) => {
   if (!str) return "";
-  return str.replace(/^data:image\/\w+;base64,/, "");
+  // 移除所有可能的 data URI 前綴
+  return str.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
 };
 
-// 🔧 新增功能：圖片壓縮器
-// 這會強制把圖片縮小到 1024px 以下，並轉為 JPEG 格式，確保傳輸不會斷線
+// 🔧 核心修復：強健的圖片壓縮器
 const compressBase64 = (base64Str: string, mimeType: string): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    // 1. 建立圖片物件
-    const img = new Image();
-    // 確保有開頭前綴，這樣 Image 物件才讀得懂
-    const src = base64Str.startsWith("data:") ? base64Str : `data:${mimeType};base64,${base64Str}`;
-    img.src = src;
+  return new Promise((resolve) => {
+    // 1. 安全檢查：如果字串是空的或看起來不像圖片數據，直接回傳空值以免報錯
+    if (!base64Str || base64Str.length < 100) {
+      console.warn("圖片數據異常 (太短或為空)，跳過壓縮");
+      resolve(base64Str); 
+      return;
+    }
 
+    const img = new Image();
+    
+    // 2. 修復 "undefined" 錯誤：如果 mimeType 遺失，強制預設為 png
+    const safeMime = mimeType || "image/png";
+    
+    // 3. 智慧判斷：如果傳入的字串已經有前綴，就不重複加；否則補上正確的前綴
+    // 這是解決你看到 "data:undefined" 錯誤的關鍵
+    if (base64Str.startsWith("data:")) {
+      img.src = base64Str;
+    } else {
+      img.src = `data:${safeMime};base64,${base64Str}`;
+    }
+
+    // 成功載入圖片後進行壓縮
     img.onload = () => {
-      // 2. 建立 Canvas
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        resolve(cleanBase64(base64Str)); // 如果 canvas 失敗，就回傳原圖
+        resolve(cleanBase64(base64Str));
         return;
       }
 
-      // 3. 計算縮放比例 (限制長邊最大 1024px)
+      // 4. 強制縮小：長邊限制 1024px (Gemini 的最佳解析度)
       const MAX_SIZE = 1024; 
       let width = img.width;
       let height = img.height;
@@ -45,16 +59,19 @@ const compressBase64 = (base64Str: string, mimeType: string): Promise<string> =>
       canvas.width = width;
       canvas.height = height;
 
-      // 4. 繪製並壓縮 (轉為 JPEG, 品質 0.7)
       ctx.drawImage(img, 0, 0, width, height);
+      
+      // 5. 輸出壓縮後的 Base64 (使用 JPEG 0.7 品質大幅瘦身)
+      // 注意：這會回傳完整的 data URI
       const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
       
-      // 5. 回傳乾淨的 Base64 (去除前綴)
+      // 回傳時去掉前綴，只留數據
       resolve(compressedDataUrl.split(',')[1]);
     };
 
+    // 失敗處理：如果圖片真的壞了，回傳原始字串嘗試運氣 (並印出詳細錯誤)
     img.onerror = (err) => {
-      console.warn("圖片壓縮失敗，使用原圖:", err);
+      console.error("圖片壓縮失敗 (可能是格式不支援)，將使用原圖傳送。", err);
       resolve(cleanBase64(base64Str));
     };
   });
@@ -68,20 +85,17 @@ export const generateTryOnImage = async (
   garmentImageMimeType: string
 ): Promise<string> => {
   
-  // 1. 驗證 Key
   if (!apiKey) throw new Error("API Key is missing");
 
-  // ★重點修改★：在初始化 API 之前，先執行壓縮
-  // 這一步會把 5MB 的圖變成約 200KB，解決 "Failed to fetch"
   try {
+    // 1. 在傳送前，先壓縮兩張圖片 (這是解決 Failed to fetch 的唯一方法)
+    console.log("正在處理圖片...");
     const [compressedUserImg, compressedGarmentImg] = await Promise.all([
       compressBase64(userImageBase64, userImageMimeType),
       compressBase64(garmentImageBase64, garmentImageMimeType)
     ]);
 
     const genAI = new GoogleGenerativeAI(apiKey);
-
-    // 2. 使用最穩定的模型
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const prompt = `You are an AI stylist.
@@ -92,24 +106,23 @@ export const generateTryOnImage = async (
     TASK:
     Generate a photorealistic image of the User wearing the Garment.
     - Maintain the user's pose, body shape, and lighting.
-    - Adapt the garment to fit naturally (folds, shadows).
-    - If the user is an anime character, maintain the art style.
+    - Adapt the garment to fit naturally.
     
     Return ONLY the generated image.`;
 
-    // 3. 發送請求 (使用剛剛壓縮過的圖片)
+    // 2. 發送請求
     const result = await model.generateContent([
       prompt,
       {
         inlineData: {
-          data: compressedUserImg, // 使用壓縮後的圖
-          mimeType: "image/jpeg",  // 壓縮後統一變成 jpeg
+          data: compressedUserImg, 
+          mimeType: "image/jpeg",  // 壓縮後統一變成 jpeg，這很安全
         },
       },
       {
         inlineData: {
-          data: compressedGarmentImg, // 使用壓縮後的圖
-          mimeType: "image/jpeg",     // 壓縮後統一變成 jpeg
+          data: compressedGarmentImg, 
+          mimeType: "image/jpeg",
         },
       }
     ]);
@@ -118,13 +131,11 @@ export const generateTryOnImage = async (
     return response.text();
 
   } catch (error) {
-    console.error("Gemini API Error:", error);
+    console.error("Gemini API Error Detail:", error);
     
-    // 捕捉 Failed to fetch 的詳細原因
     if (error instanceof Error && error.message.includes("Failed to fetch")) {
-      throw new Error("連線失敗 (Failed to fetch)。可能是網路被阻擋或 API Key 限制。請檢查瀏覽器 Console。");
+      throw new Error("連線中斷。可能是圖片仍過大或 API 網路不穩。請再試一次。");
     }
-    
     throw error;
   }
 };
