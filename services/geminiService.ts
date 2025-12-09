@@ -19,20 +19,25 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
 
 // 🔧 核心壓縮邏輯
 const processAndCompressImage = async (input: string, mimeType: string): Promise<string> => {
-  // 1. 強制攔截無效參數：如果傳入的是 "image/png" 這種短字串，直接擋掉
-  if (!input || (input.length < 100 && !input.startsWith("blob:") && !input.startsWith("http"))) {
-    console.warn(`⚠️ 忽略無效圖片數據: "${input}" (長度不足)`);
+  // 1. 寬鬆檢查：如果是 blob 開頭，或者是長字串，或者是 http 連結，都允許通過
+  // 這是為了解決 blob 網址很短 (約60字元) 被誤判的問題
+  const isBlob = input && input.startsWith("blob:");
+  const isLong = input && input.length > 100;
+  const isHttp = input && input.startsWith("http");
+
+  if (!input || (!isBlob && !isLong && !isHttp)) {
+    console.warn(`⚠️ 忽略無效圖片數據: "${input}" (非 blob 且長度不足)`);
     return "";
   }
 
   let srcToLoad = input;
 
   // 2. 如果是 Blob 網址，先 fetch 下來
-  if (input.startsWith("blob:")) {
+  if (isBlob) {
     const converted = await fetchBlobToBase64(input);
     if (!converted) return "";
     srcToLoad = converted;
-  } else if (!input.startsWith("data:") && !input.startsWith("http")) {
+  } else if (!input.startsWith("data:") && !isHttp) {
     // 補全 Base64 前綴
     srcToLoad = `data:${mimeType || "image/png"};base64,${input}`;
   }
@@ -84,28 +89,34 @@ export const generateTryOnImage = async (
   
   if (!apiKey) throw new Error("API Key is missing");
 
-  // 🔥 超強自動修正：基於長度的交換邏輯 🔥
-  // 如果 "圖片變數" 很短 (<100)，但 "格式變數" 很長 (>100)，那肯定是傳反了，直接換回來。
+  // 🔥 終極自動修正：支援 Blob 的交換邏輯 🔥
+  // 只要第二個參數是 blob 開頭，或者很長，就認定它是圖片，進行交換
   
   let finalUserImg = userImageBase64;
   let finalUserMime = userImageMimeType;
   
-  if (finalUserImg && finalUserImg.length < 100 && finalUserMime && finalUserMime.length > 100) {
-    console.warn("⚠️ 偵測到 User 參數傳反，已自動修正 (Length Swap)");
+  const userImgIsShort = finalUserImg && finalUserImg.length < 100 && !finalUserImg.startsWith("blob:");
+  const userMimeIsRealImg = finalUserMime && (finalUserMime.length > 100 || finalUserMime.startsWith("blob:"));
+
+  if (userImgIsShort && userMimeIsRealImg) {
+    console.warn("⚠️ 偵測到 User 參數傳反，已自動修正 (Smart Swap)");
     [finalUserImg, finalUserMime] = [finalUserMime, finalUserImg];
   }
 
   let finalGarmentImg = garmentImageBase64;
   let finalGarmentMime = garmentImageMimeType;
 
-  if (finalGarmentImg && finalGarmentImg.length < 100 && finalGarmentMime && finalGarmentMime.length > 100) {
-    console.warn("⚠️ 偵測到 Garment 參數傳反，已自動修正 (Length Swap)");
+  const garmentImgIsShort = finalGarmentImg && finalGarmentImg.length < 100 && !finalGarmentImg.startsWith("blob:");
+  const garmentMimeIsRealImg = finalGarmentMime && (finalGarmentMime.length > 100 || finalGarmentMime.startsWith("blob:"));
+
+  if (garmentImgIsShort && garmentMimeIsRealImg) {
+    console.warn("⚠️ 偵測到 Garment 參數傳反，已自動修正 (Smart Swap)");
     [finalGarmentImg, finalGarmentMime] = [finalGarmentMime, finalGarmentImg];
   }
 
   try {
     console.log("🚀 開始處理圖片...");
-    // 印出前 30 字元確認是否正確 (應該要是 blob: 或 data: 或 iVBO...)
+    // 印出前 30 字元確認 (現在應該能正確看到 blob: 或 data: 或 iVBO...)
     console.log("User Img:", finalUserImg?.substring(0, 30)); 
     console.log("Garment Img:", finalGarmentImg?.substring(0, 30));
 
