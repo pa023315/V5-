@@ -1,0 +1,10 @@
+[service]
+name = "ai-tryon"
+
+[build]
+# 強制執行 Python 安裝指令 (覆蓋掉錯誤的 yarn install)
+cmd = "pip install -r requirements.txt"
+
+[start]
+# 強制執行你的主程式
+cmd = "python app.py"
