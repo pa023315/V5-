@@ -1,4 +1,0 @@
-gradio
-google-generativeai
-pillow
-requests

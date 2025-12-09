@@ -10,6 +10,7 @@ import { ImageFile, Step, HistoryItem } from './types';
 import { Wand2, AlertCircle, Loader2 } from 'lucide-react';
 
 const MAX_HISTORY_ITEMS = 12;
+const FIXED_GARMENT_URL = "https://i.meee.com.tw/lcHCNPq.jpg";
 
 const App: React.FC = () => {
   const [step, setStep] = useState<Step>(Step.UPLOAD);
@@ -143,6 +144,32 @@ const App: React.FC = () => {
     });
   };
 
+  // Load Fixed Garment
+  useEffect(() => {
+    const loadFixedGarment = async () => {
+      try {
+        // Use a CORS proxy to fetch the external image
+        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(FIXED_GARMENT_URL)}`;
+        const response = await fetch(proxyUrl);
+        
+        if (!response.ok) {
+            throw new Error(`Failed to fetch image: ${response.statusText}`);
+        }
+
+        const blob = await response.blob();
+        // Create a File object from the blob
+        const file = new File([blob], "fixed_garment.jpg", { type: blob.type || "image/jpeg" });
+        const processed = await processFile(file);
+        setGarmentImage(processed);
+      } catch (e) {
+        console.error("Failed to load fixed garment:", e);
+        setError("無法載入預設服裝圖片，這可能是因為瀏覽器安全性限制。請嘗試重新整理頁面。");
+      }
+    };
+    
+    loadFixedGarment();
+  }, []);
+
   const handleUserUpload = async (file: File) => {
     try {
       const imageFile = await processFile(file);
@@ -155,6 +182,8 @@ const App: React.FC = () => {
   };
 
   const handleGarmentUpload = async (file: File) => {
+    // This functionality is currently disabled in UI via readOnly, 
+    // but kept here for potential future use or drag-drop edge cases if readOnly isn't fully enforced.
     try {
       const imageFile = await processFile(file);
       setGarmentImage(imageFile);
@@ -259,8 +288,8 @@ const App: React.FC = () => {
                 虛擬試穿 (Virtual Try-On)
               </h1>
               <p className="text-lg text-slate-600">
-                利用先進的生成式 AI 技術，立即預覽服裝穿在您身上的效果。
-                請上傳一張您的照片以及想試穿的服裝圖片。
+                利用先進的生成式 AI 技術，立即預覽這件服裝穿在您身上的效果。
+                請上傳一張您的照片。
               </p>
             </div>
 
@@ -275,13 +304,14 @@ const App: React.FC = () => {
                 className="h-full"
               />
               <UploadCard
-                title="2. 服裝照片"
-                description="請上傳服裝的平拍圖或模特兒展示照。"
+                title="2. 指定服裝款式"
+                description="這是本次試穿的指定服裝。"
                 image={garmentImage}
                 onUpload={handleGarmentUpload}
                 onRemove={() => setGarmentImage(null)}
                 accept={ACCEPT_TYPES}
                 className="h-full"
+                readOnly={true}
               />
             </div>
 
