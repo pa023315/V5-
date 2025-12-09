@@ -19,23 +19,20 @@ const fetchBlobToBase64 = async (blobUrl: string): Promise<string> => {
 
 // 🔧 核心壓縮邏輯
 const processAndCompressImage = async (input: string): Promise<string> => {
-  // 1. 檢查輸入是否有效
   if (!input) return "";
   
-  // 忽略顯然不是圖片的短字串 (例如 "image/png")
+  // 忽略顯然不是圖片的短字串
   if (!input.startsWith("blob:") && !input.startsWith("data:") && !input.startsWith("http") && input.length < 200) {
     return "";
   }
 
   let srcToLoad = input;
 
-  // 2. 如果是 Blob 網址，先 fetch 下來
   if (input.startsWith("blob:")) {
     const converted = await fetchBlobToBase64(input);
     if (!converted) return "";
     srcToLoad = converted;
   } else if (!input.startsWith("data:") && !input.startsWith("http")) {
-    // 假設是 Base64 但沒頭，補上 jpeg 頭 (比較保險)
     srcToLoad = `data:image/jpeg;base64,${input}`;
   }
 
@@ -49,7 +46,6 @@ const processAndCompressImage = async (input: string): Promise<string> => {
       const ctx = canvas.getContext('2d');
       if (!ctx) { resolve(""); return; }
 
-      // 強制縮小：長邊限制 1024px
       const MAX_SIZE = 1024; 
       let width = img.width;
       let height = img.height;
@@ -64,7 +60,6 @@ const processAndCompressImage = async (input: string): Promise<string> => {
       canvas.height = height;
 
       ctx.drawImage(img, 0, 0, width, height);
-      // 轉為 JPEG (品質 0.7)
       const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
       resolve(compressedDataUrl.split(',')[1]);
     };
@@ -88,13 +83,9 @@ export const generateTryOnImage = async (
 
   console.log("🚀 開始處理圖片 (智慧參數池模式)...");
 
-  // 🔥 智慧參數池邏輯 🔥
-  // 不管外面參數傳的順序多亂，我們把所有參數收集起來，
-  // 然後只把「真正的圖片」過濾出來。
-  
   const allArgs = [arg1, arg2, arg3, arg4];
   
-  // 尋找像是圖片的參數 (Blob 網址，或是長度 > 200 的字串)
+  // 尋找像是圖片的參數
   const validImages = allArgs.filter(arg => 
     arg && (arg.startsWith("blob:") || arg.length > 200)
   );
@@ -102,29 +93,26 @@ export const generateTryOnImage = async (
   console.log(`偵測到 ${validImages.length} 張有效圖片`);
 
   if (validImages.length < 2) {
-    console.error("❌ 嚴重錯誤：無法在參數中找到兩張圖片。偵測到的內容:", allArgs);
-    throw new Error("圖片參數遺失：程式無法從輸入中找到兩張有效的圖片，請確認您有上傳圖片。");
+    throw new Error("圖片參數遺失：程式無法從輸入中找到兩張有效的圖片。");
   }
 
-  // 按照慣例，抓到的第一張是 User，第二張是 Garment
-  // (這比依賴錯誤的參數位置可靠得多)
   const finalUserImg = validImages[0];
   const finalGarmentImg = validImages[1];
 
   try {
-    console.log("User Img (前30字):", finalUserImg?.substring(0, 30)); 
-    console.log("Garment Img (前30字):", finalGarmentImg?.substring(0, 30));
-
     const [compressedUserImg, compressedGarmentImg] = await Promise.all([
       processAndCompressImage(finalUserImg),
       processAndCompressImage(finalGarmentImg)
     ]);
 
-    if (!compressedUserImg) throw new Error("使用者圖片處理失敗 (讀取錯誤)");
-    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗 (讀取錯誤)");
+    if (!compressedUserImg) throw new Error("使用者圖片處理失敗");
+    if (!compressedGarmentImg) throw new Error("服裝圖片處理失敗");
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    
+    // 🔥 關鍵修改：使用更穩定的模型版本號 🔥
+    // 如果 1.5-flash-001 還是 404，請改用 "gemini-1.5-pro"
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-001" });
 
     const prompt = `You are an AI stylist.
     INPUTS:
@@ -149,8 +137,14 @@ export const generateTryOnImage = async (
 
   } catch (error) {
     console.error("API Error:", error);
-    if (error instanceof Error && error.message.includes("Failed to fetch")) {
-      throw new Error("連線失敗。請檢查 API Key 或網路狀況。");
+    
+    if (error instanceof Error) {
+        if (error.message.includes("404")) {
+             throw new Error("模型未找到 (404)。請檢查 API Key 是否有權限，或嘗試更換模型名稱。");
+        }
+        if (error.message.includes("Failed to fetch")) {
+            throw new Error("連線失敗。請檢查 API Key 或網路狀況。");
+        }
     }
     throw error;
   }
