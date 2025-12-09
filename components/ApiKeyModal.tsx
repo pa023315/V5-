@@ -59,7 +59,7 @@ const ApiKeyModal: React.FC<ApiKeyModalProps> = ({ isOpen, onClose, onSave, curr
                 <li className="flex gap-3 text-sm text-slate-700">
                    <span className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full bg-indigo-200 text-indigo-700 text-xs font-bold mt-0.5">2</span>
                    <span>
-                      點擊左上角的 <span className="font-semibold bg-white px-1.5 py-0.5 border border-slate-200 rounded text-slate-800 text-xs shadow-sm">Get API key</span> 按鈕。
+                      點擊左下角的 <span className="font-semibold bg-white px-1.5 py-0.5 border border-slate-200 rounded text-slate-800 text-xs shadow-sm">Get API key</span> 按鈕。
                    </span>
                 </li>
                 <li className="flex gap-3 text-sm text-slate-700">
