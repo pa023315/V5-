@@ -13,7 +13,7 @@ export const generateTryOnImage = async (
 const genAI = new GoogleGenerativeAI(apiKey);
 
   try {
-// 1. 取得模型 (修正：使用 genAI 變數，並指定 1.5-flash 模型)
+// 1. 取得模型 (修正：使用 genAI 變數，並指定 2.5-flash 模型)
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-image" });
 
     // 2. 準備 Prompt (你原本的文字)
