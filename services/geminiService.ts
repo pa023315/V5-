@@ -13,12 +13,25 @@ export const generateTryOnImage = async (
 const genAI = new GoogleGenerativeAI(apiKey);
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [
-          {
-            text: `You are an advanced AI Art Director capable of handling both Photorealism and Anime/2D Art styles.
+// 1. 取得模型 (修正：使用 genAI 變數，並指定 1.5-flash 模型)
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-image" });
+
+    // 2. 準備 Prompt (你原本的文字)
+    const prompt = `You are an advanced AI Art Director capable of handling both Photorealism and Anime/2D Art styles.`;
+
+    // 3. 發送請求 (修正：把文字和圖片放在一個陣列裡傳送)
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          data: userImageBase64,
+          mimeType: userImageMimeType,
+        },
+      }
+    ]);
+
+    const response = await result.response;
+    return response.text();
             
             ### INPUTS
             Image 1: The USER (Target Model).
