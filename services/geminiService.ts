@@ -12,7 +12,7 @@ export const generateTryOnImage = async (
 
   try {
     // 1. 照您的要求，保留 gemini-2.5-flash-image
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-image" });
 
     // 2. 修正：將您原本掉在外面的 Prompt 文字，全部包進這裡
     const prompt = `You are an advanced AI Art Director capable of handling both Photorealism and Anime/2D Art styles.
